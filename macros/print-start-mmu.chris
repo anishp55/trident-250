@@ -1,0 +1,112 @@
+[gcode_macro PRINT_START_MMU]
+gcode:
+    {% set BED_TEMP  = params.BED_TEMP|int %}
+    {% set EXTRUDER_TEMP = params.EXTRUDER_TEMP|int %}
+    {% set CHAMBER = params.CHAMBER|default(55)|int %}                                   ; Lets begin working with this chamber temp variable to ensure long enough heat soaking, until we add bed_top th
+    {% set ADAPTIVE = params.ADAPTIVE|default('YES')|string %}
+    {% set REFERENCED_TOOLS = params.REFERENCED_TOOLS|default("")|string %}
+    {% set INITIAL_TOOL = params.INITIAL_TOOL|default(0)|int %}
+
+    #{% if REFERENCED_TOOLS == "!referenced_tools!" %}                                    ; Using the gcode preprocessor, we announce the number of tools used in this print.
+        #RESPOND MSG="Happy Hare gcode pre-processor is diabled"
+        #{% set REFERENCED_TOOLS = INITIAL_TOOL %}
+    #{% elif REFERENCED_TOOLS == "" %}
+        #RESPOND MSG="Happy Hare single color print"
+        #{% set REFERENCED_TOOLS = INITIAL_TOOL %}
+    #{% endif %}
+
+    CLEAR_PAUSE                                                                          ; Clears the current paused state without resuming the print
+    CHAMBER_LED_ON                                                                       ; Make sure LED's are on for camera
+#   CHAMBER_FAN_OFF                                                                      ; Turn off exhaust fan in case it was on from last print
+    SET_GCODE_OFFSET Z=0.205                                                             ; Reset gcode offset set by PLA profile AKP commented for troubleshooting
+    M220 S100                                                                            ; Set printer speed to 100% just incase it adjusted last print
+    SET_FAN_SPEED FAN=Nevermore SPEED=0.5                                                  ; Turn on Nevermore
+    BEACON_MODEL_LIST                                                                    ; List out my Beacon Models, and let me know which one is selected
+#    SET_VELOCITY_LIMIT ACCEL=10000                                                       ; Reset accel from last print
+#    SET_VELOCITY_LIMIT ACCEL_TO_DECEL=5000                                               ; Reset accel from last print
+    
+    STATUS_HOMING
+    RESPOND TYPE=command MSG="First Home"
+    _CG28                                                                                  ; Force homing to put nozzle near the bed for Beacon heatup
+
+    MMU_EJECT
+    MMU__HOME                                                                            ; Home the MMU in order to check the gates
+    MMU_CHECK_GATE TOOLS={REFERENCED_TOOLS}                                              ; Perform gate check on tools used in this print.
+
+    SET_DISPLAY_TEXT MSG="Heating Hotend to 150c for Beacon"
+    RESPOND TYPE=command MSG="Heating Extruder to 150c for Beacon"
+    M109 S150       ; preheat nozzle to probing temp
+    ;AKP COMMENT
+    ; M104 S220                                                                            ; Heats the nozzle to 265c
+    ; M106 S255                                                                            ; Turns on the PT-fan
+    Z_TILT_ADJUST                                                                        ; Tilt z prior to every print
+    {% if params.BED_TEMP|int > 90 %}                                                    ; Checks if the bed temp is higher than 90c - if so then trigger a heatsoak.
+
+      SET_DISPLAY_TEXT MSG="Heating Bed: {BED_TEMP}c"
+      RESPOND TYPE=command MSG="Heating Bed: {BED_TEMP}c"
+      STATUS_HEATING                                                                     ; Sets SB-leds to heating-mode
+      M106 S255                                                                          ; Turns on the PT-fan
+  
+      M190 S{BED_TEMP}                                                                   ; Sets the target temp for the bed
+      SET_DISPLAY_TEXT MSG="Heatsoaking: {CHAMBER}c"
+      RESPOND TYPE=command MSG="Heatsoaking: {CHAMBER}c"
+      TEMPERATURE_WAIT SENSOR="temperature_sensor back_chamber_temp" MINIMUM={CHAMBER}   # Waits for chamber to reach desired temp
+  
+    {% else %}                                                                           ; If the bed temp is not over 90c, then it skips the heatsoak and just heats up to set temp with a 5min soak
+    
+      SET_DISPLAY_TEXT MSG="Heating Bed: {BED_TEMP}c"
+      RESPOND TYPE=command MSG="Heating Bed: {BED_TEMP}c"
+      STATUS_HEATING                                                                     ; Sets SB-leds to heating-mode
+      M190 S{BED_TEMP}                                                                   ; Sets the target temp for the bed
+      SET_DISPLAY_TEXT MSG="Soak for 5min"
+      
+    {% endif %}
+
+
+    STATUS_HOMING
+    RESPOND TYPE=command MSG="Second Home (Z)"
+    G28 Z                                                                                ; Home Z (X,Y homed above)
+    # M109 S{EXTRUDER_TEMP}                                                                ; Wait for extruder to normalize, then proceed
+
+
+    SET_DISPLAY_TEXT MSG="AKP BEACON CONTACT CALIBRATE"
+    RESPOND TYPE=command MSG="AKP BEACON CONTACT CALIBRATE"
+    G28 Z METHOD=CONTACT CALIBRATE=1                                                     ; AKP FOR BEACON
+    STATUS_CALIBRATING_Z
+    SET_DISPLAY_TEXT MSG="Z-tilt adjust"
+    RESPOND TYPE=command MSG="Tilting Z"
+    Z_TILT_ADJUST                                                                        ; Tilt z prior to every print
+    RESPOND TYPE=command MSG="Third Home (Z)"
+    # SET_DISPLAY_TEXT MSG="AKP BEACON RUNNING BEDMESH x2"
+    # BED_MESH_CALIBRATE RUNS=2                                                            ; AKP FOR BEACON
+
+    G28 Z                                                                             ; Home z again after tilting
+
+
+    STATUS_MESHING
+    SET_DISPLAY_TEXT MSG="Bed meshing"
+    RESPOND TYPE=command MSG="Bed Meshing."
+    
+    # {% if ADAPTIVE|string == 'YES' %}
+    BED_MESH_CALIBRATE RUNS=2 ADAPTIVE=1 
+    # {% else %} 
+      # BED_MESH_CALIBRATE ADAPTIVE=0
+    # {% endif %}
+    G28 Z METHOD=CONTACT CALIBRATE=0    
+    #BED_MESH_CALIBRATE ADAPTIVE=1                                                        ; Create a new mesh, every print / Added adaptive since it was included into Klipper
+    #MMU_CHANGE_TOOL STANDALONE=1 TOOL={INITIAL_TOOL}
+    G92 E0                                                                               ; Reset extruder
+    #SET_FAN_SPEED FAN=chamber_exhaust SPEED=0.10                                         ; Enable chamber exhause to maintain positive pressure and keep ABS smellfrom leaking out
+
+    SET_DISPLAY_TEXT MSG="waiting for extruder to reach {EXTRUDER_TEMP}c"
+    RESPOND TYPE=command MSG="waiting for extruder to reach {EXTRUDER_TEMP}c"
+
+    M104 S{EXTRUDER_TEMP}                    ; set extruder to print temp
+    M109 S{EXTRUDER_TEMP}                    ; wait for extruder temp
+    M106 S255                                                                            ; Turns on the PT-fan
+    ;SET_GCODE_OFFSET Z_ADJUST={OFFSET}  ; apply optional material squish via slicer
+
+    SET_DISPLAY_TEXT MSG="Printing"
+    STATUS_PRINTING
+    M107                                                                                 ; Turn off part fans for first layer.
+    SET_LED LED="sb_leds" RED=1 GREEN=1 BLUE=1 WHITE=1 SYNC=0 TRANSMIT=1                 ; Set LED to white so we can see first layer.
